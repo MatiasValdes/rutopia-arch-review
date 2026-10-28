@@ -1,12 +1,10 @@
 import { defineAgent } from "@grok/agent-sdk";
 
 export default defineAgent({
+  // Cursor Auto / Router (same intent as Automations model "Auto")
   model: {
-    id: "grok-4.7",
-    params: [
-      { id: "reasoning_effort", value: "high" },
-      { id: "fast", value: "true" },
-    ],
+    id: "auto-smart",
+    params: [{ id: "optimize_for", value: "balanced" }],
   },
   tools: ["read", "grep"],
   local: {

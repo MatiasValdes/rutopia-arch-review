@@ -5,7 +5,11 @@
   "description": "Architecture review agent for MatiasValdes/rutopia_backend PRs",
   "scripts": {
     "check": "tsc --noEmit",
-    "dev": "agent-sdk dev"
+    "validate": "agent-sdk validate --dir .",
+    "playground": "agent-sdk dev --dir .",
+    "eval": "agent-sdk eval --dir .",
+    "deploy:dry": "agent-sdk deploy --dir . --dry-run --json",
+    "deploy": "agent-sdk deploy --dir . --cursor-events-repo MatiasValdes/rutopia_backend"
   },
   "dependencies": {
     "@grok/agent-sdk": "^0.4.0",

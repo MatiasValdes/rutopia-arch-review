@@ -7,11 +7,15 @@ import { BOT_NAME, CHECK_NAME, REPOS, dedupeKey, watches } from "../lib/repos.js
 
 const MAX_DIFF_CHARS = 150_000;
 
+/**
+ * Production path: Cursor-hosted agent + cursor events on REPOS.
+ * Local path: playground / evals only — do not rely on `github replay`.
+ */
 export default githubChannel({
   botName: BOT_NAME,
-  cursorAccount: { repos: [...REPOS] },
+  cursorAccount: { repos: [...REPOS], permissions: "contents-write" },
   checks: true,
-  cloud: true,
+  // Diff + instructions are enough; avoid spinning a cloud checkout per PR.
   deliverReplies: false,
   onComment: () => null,
   onPullRequest: async (ctx, pr) => {
@@ -23,19 +27,34 @@ export default githubChannel({
       return null;
     }
 
-    const octokit = await ctx.github.getOctokit();
     const pull = {
       owner: ctx.repository.owner,
       repo: ctx.repository.name,
       pull_number: pr.number,
     };
-    const [meta, diff] = await Promise.all([
-      octokit.rest.pulls.get(pull),
-      octokit.rest.pulls.get({ ...pull, mediaType: { format: "diff" } }),
-    ]);
-    const headSha = meta.data.head.sha;
-    const authorLogin = meta.data.user?.login ?? "unknown";
-    const baseRef = meta.data.base.ref;
+
+    let meta;
+    let diffText = "";
+    try {
+      const octokit = await ctx.github.getOctokit();
+      const [metaRes, diffRes] = await Promise.all([
+        octokit.rest.pulls.get(pull),
+        octokit.rest.pulls.get({ ...pull, mediaType: { format: "diff" } }),
+      ]);
+      meta = metaRes.data;
+      diffText = typeof diffRes.data === "string" ? diffRes.data : "";
+    } catch (error) {
+      // Without GitHub credentials (local playground) we cannot review a live PR.
+      console.error(
+        `[rutopia-arch-review] skip PR #${pr.number}: cannot read pull/diff`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+
+    const headSha = meta.head.sha;
+    const authorLogin = meta.user?.login ?? "unknown";
+    const baseRef = meta.base.ref;
     const kvKey = dedupeKey(
       ctx.repository.owner,
       ctx.repository.name,
@@ -43,8 +62,7 @@ export default githubChannel({
       headSha,
     );
 
-    const kvHit = await ctx.host.kv.get(kvKey);
-    if (kvHit !== undefined) {
+    if ((await ctx.host.kv.get(kvKey)) !== undefined) {
       return null;
     }
     if (
@@ -60,7 +78,6 @@ export default githubChannel({
       return null;
     }
 
-    // Hard gate: PRs targeting master fail without a model turn.
     if (baseRef === "master") {
       return {
         task: async () => {
@@ -78,10 +95,12 @@ export default githubChannel({
               {
                 severity: "bloqueante",
                 path: "(base branch)",
-                detail: `Base actual: master. Usá otra base (opción A: cualquier rama ≠ master).`,
+                detail:
+                  "Base actual: master. Usá otra base (cualquier rama ≠ master).",
               },
             ],
-            nextStep: "Cambiá la base del PR y esperá el re-análisis en el nuevo HEAD.",
+            nextStep:
+              "Cambiá la base del PR y esperá el re-análisis en el nuevo HEAD.",
           });
           if (result.posted) {
             await ctx.host.kv.put(kvKey, {
@@ -94,17 +113,16 @@ export default githubChannel({
       };
     }
 
-    const text = typeof diff.data === "string" ? diff.data : "";
     const metaJson = JSON.stringify(
       {
         number: pr.number,
-        title: meta.data.title,
-        draft: meta.data.draft,
+        title: meta.title,
+        draft: meta.draft,
         authorLogin,
         baseRef,
-        headRef: meta.data.head.ref,
+        headRef: meta.head.ref,
         headSha,
-        htmlUrl: meta.data.html_url,
+        htmlUrl: meta.html_url,
       },
       null,
       2,
@@ -119,9 +137,9 @@ export default githubChannel({
       async workspaceFiles() {
         return {
           "pr/diff.patch":
-            text.length > MAX_DIFF_CHARS
-              ? `${text.slice(0, MAX_DIFF_CHARS)}\n…[truncated]\n`
-              : text,
+            diffText.length > MAX_DIFF_CHARS
+              ? `${diffText.slice(0, MAX_DIFF_CHARS)}\n…[truncated]\n`
+              : diffText,
           "pr/head.sha": headSha,
           "pr/meta.json": metaJson,
         };
